@@ -1,0 +1,186 @@
+```{r message=FALSE, warning=FALSE}
+library(dplyr)
+library(stringr)
+library(tidytext)
+library(tidyverse)
+library(tokenizers)
+library(qdapDictionaries)
+```
+```{r}
+x = 500 # only use 500 most common words
+input_file <- "covid.txt"
+```
+### Data Processing
+#### a. Text Cleaning
+```{r}
+# Text cleaning
+text.clean <- function(input) {
+  input %>%
+  gsub("'s", '', .) %>% # Remove 's
+  gsub("'", '', .) %>% # Remove other contractions
+  gsub('[[:punct:][:blank:]]+', ' ', .) %>% # Remove punctuation
+  gsub('[[:digit:]]+', '', .) %>% # Remove numbers
+  gsub('[^[:alnum:][:blank:]?&/\\-]', '', .) %>% # Remove weird characters
+  gsub('â', '', .) %>% # Remove â
+  gsub('\r\n', ' ', .) %>% # Remove characters \r\n
+  gsub('   ', ' ', .) %>% # Remove triple spaces
+  gsub('  ', ' ', .) # Remove double spaces
+}
+
+input <- readChar(input_file, file.info(input_file)$size) %>%
+  text.clean()
+words <- unlist(tokenize_words(input))
+```
+#### b. Transition Probability Matrix
+Each word is a state in our state space.
+```{r}
+input_search <- paste('', input) # Space in front of first word
+
+# x most common words
+word_counts <- data.frame(word=words, stringsAsFactors=FALSE) %>%
+  group_by(word) %>%
+  summarize(count=n()) %>%
+  arrange(desc(count)) %>%
+  head(x) %>%
+  arrange(word)
+matrix_words <- word_counts$word
+
+transition.matrix <- matrix(nrow=length(matrix_words),
+                 ncol=length(matrix_words),
+                 dimnames=list(from=matrix_words, to=matrix_words))
+
+start_time <- Sys.time()
+
+for (i in 1:nrow(transition.matrix)) {
+  row.probability <- vector()
+  for (j in 1:ncol(transition.matrix)) {
+    two.words <- paste('', matrix_words[i], matrix_words[j], '')
+    row.probability <- c(row.probability, str_count(input_search, two.words))
+  }
+  if (sum(row.probability) > 0) {
+    transition.matrix[i,] <- row.probability / sum(row.probability)
+  } else {
+    transition.matrix[i,] <- 0
+  }
+  if (sum(row.probability) == 0) {
+    transition.matrix[i,i] <- 1
+  } 
+}
+
+end_time <- Sys.time()
+end_time - start_time
+```
+```{r}
+# Print part of transition matrix
+transition.matrix[1:25,1:9] %>%
+  round(digits=3)
+```
+```{r}
+# Check all row sum = 1
+if (sum(rowSums(transition.matrix) == 1) == nrow(transition.matrix)) {
+  print(TRUE)
+} else {
+  print(FALSE)
+}
+```
+### Application 1: Autocorrect
+If we type a word, what word should follow?
+```{r}
+# Prediction: use state change with highest probability to predict next word
+prediction <- data.frame(first.word=rownames(transition.matrix),
+                         second.word=NA,
+                         probability=NA)
+
+na.indexes <- vector()
+for (i in 1:nrow(transition.matrix)) {
+    prediction$second.word[i] <- 
+      colnames(transition.matrix)[which.max(transition.matrix[i,])]
+    prediction$probability[i] <-
+      transition.matrix[i, which.max(transition.matrix[i,])] %>% round(digits=3)
+    if (prediction$first.word[i] == prediction$second.word[i]) {
+      prediction$second.word[i] <- NA
+      prediction$probability[i] <- NA
+      na.indexes <- c(na.indexes, i)
+    }
+}
+
+# Print part of predictions data frame
+# NA means that the first word is not followed by anything within the top 500 most frequent words
+prediction %>% head(20)
+```
+```{r}
+# Create the autocompletion function
+autocomplete <- function(input, length) {
+  act <- vector()
+  act[1] <- input
+  if (is.na(match(act[1], matrix_words)) == TRUE) {
+    return('Unable to proceed with autocorrect.')
+  } else {
+      for (i in 2:length) {
+        if (is.na(prediction$second.word[which(prediction$first.word == act[i-1])])) {
+          print('Autocomplete stopped prematurely.')
+          return(act)
+        } else {
+          act[i] <- prediction$second.word[which(prediction$first.word == act[i-1])]
+        }
+      }
+      act <- paste0(act, collapse=' ')
+      return(act)
+  }
+}
+```
+```{r}
+# Premature stop
+autocomplete('singapore', 6) # given first word 'singapore', create phrase of total 6 words
+```
+```{r}
+# Complete phrase
+autocomplete('later', 6) # given first word 'later', create phrase of total 6 words
+```
+### Application 2: Sentiment Analysis
+If we type a word, what is the probability distribution of sentiments for the possible words that follow?
+```{r}
+# Match words with corresponding sentiments
+# If word is not found in table, it is neutral
+sentiments <- function(vector) {
+  sentiments <- vector()
+  for (i in 1:length(vector)) {
+    if (is.element(vector[i], positive.words)==TRUE) {
+      sentiments[i] <- 1 # positive
+    } else if (is.element(vector[i], negative.words)==TRUE) {
+      sentiments[i] <- -1 # negative
+    } else {
+      sentiments[i] <- 0 # neutral
+    }
+  }
+  return(as.integer(sentiments))
+}
+```
+Score represents expected 'positivity' of words that follow.
+```{r}
+# Create vector of sentiments and multiply by transition matrix
+sentiment_vector <- sentiments(matrix_words[-(na.indexes)])
+sentiment_scores <- transition.matrix[-na.indexes,-na.indexes] %*% sentiment_vector %>% round(digits=3)
+
+# Create data frame to store the results
+sentiment.data <- data.frame(Word=matrix_words[-(na.indexes)],
+                             Sentiment=NA,
+                             Score=sentiment_scores)
+for (i in 1:nrow(sentiment.data)) {
+  if (sentiment.data$Score[i] < 0) {
+    sentiment.data$Sentiment[i] <- 'Negative'
+  } else if (sentiment.data$Score[i] > 0) {
+    sentiment.data$Sentiment[i] <- 'Positive'
+  } else {
+    sentiment.data$Sentiment[i] <- 'Neutral'
+  }
+}
+```
+```{r}
+# Most positive words
+sentiment.data %>% arrange(desc(Score)) %>% head(20)
+```
+```{r}
+# Most negative words
+sentiment.data %>% arrange(Score) %>% head(20)
+```
