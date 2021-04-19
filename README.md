@@ -5,4 +5,4 @@ Project done for NUS module, <i>Stochastic Models in Management</i>, in Spring 2
 
 Part of a natural language processing project using Markov chain models to perform automatic text completion. This code performs text cleaning followed by generation of the state transition probability matrix, where each tokenized word in the data is regarded as a state in the Markov chain; this is then used to determine text outputs as well as perform sentiment analysis on the text data.
 
-Text data ("data.txt") is provided from Singapore newspaper articles dating January to April 2020 and mainly regarding the topic of COVID-19.
+Text data ("text.txt") is provided from Singapore newspaper articles dating January to April 2020 and mainly regarding the topic of COVID-19.
